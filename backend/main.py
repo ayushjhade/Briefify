@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, File
+from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 import os
 import subprocess
@@ -13,23 +13,33 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Directories to store our processed media
+# Directories for our media assets
 os.makedirs("uploaded_videos", exist_ok=True)
 os.makedirs("extracted_audio", exist_ok=True)
+os.makedirs("extracted_snapshots", exist_ok=True)
+
 
 def extract_audio_from_video(video_path: str, audio_path: str):
-    """Uses FFmpeg to extract audio from a video file into a WAV format."""
+    """Extracts audio from video to 16kHz mono WAV format."""
+    command = [
+        "ffmpeg", "-i", video_path, "-vn",
+        "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1",
+        audio_path, "-y"
+    ]
+    subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+
+
+def extract_frame_at_timestamp(video_path: str, timestamp_seconds: float, output_image_path: str):
+    """Grabs a single image frame from a video at the specified timestamp in seconds."""
     command = [
         "ffmpeg",
-        "-i", video_path,       # Input video path
-        "-vn",                  # Disable video recording (audio only)
-        "-acodec", "pcm_s16le", # Standard WAV audio encoding
-        "-ar", "16000",         # 16kHz sample rate (ideal for Speech-to-Text AI)
-        "-ac", "1",             # Mono channel (reduces file size)
-        audio_path,             # Output audio path
-        "-y"                    # Overwrite output file if it exists
+        "-ss", str(timestamp_seconds), # Jump to timestamp
+        "-i", video_path,             # Input video
+        "-vframes", "1",               # Capture only 1 frame
+        "-q:v", "2",                   # High quality JPEG
+        output_image_path,
+        "-y"
     ]
-    # Run the FFmpeg command silently
     subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
 
 
@@ -40,16 +50,13 @@ def read_root():
 
 @app.post("/upload-video/")
 async def upload_video(file: UploadFile = File(...)):
-    # 1. Save the raw video file
     video_path = f"uploaded_videos/{file.filename}"
     with open(video_path, "wb") as buffer:
         buffer.write(await file.read())
 
-    # 2. Generate the output path for audio (e.g. video.mp4 -> video.wav)
     base_filename = os.path.splitext(file.filename)[0]
     audio_path = f"extracted_audio/{base_filename}.wav"
 
-    # 3. Extract audio from video
     try:
         extract_audio_from_video(video_path, audio_path)
         return {
@@ -58,4 +65,23 @@ async def upload_video(file: UploadFile = File(...)):
             "audio_path": audio_path
         }
     except Exception as e:
-        return {"error": f"Uploaded video, but failed to extract audio: {str(e)}"}
+        return {"error": f"Failed to extract audio: {str(e)}"}
+
+
+# NEW: Test endpoint to grab a screenshot at any second!
+@app.post("/extract-snapshot/")
+async def extract_snapshot(video_filename: str = Form(...), timestamp_seconds: float = Form(...)):
+    video_path = f"uploaded_videos/{video_filename}"
+    if not os.path.exists(video_path):
+        return {"error": "Video file not found!"}
+
+    snapshot_path = f"extracted_snapshots/{os.path.splitext(video_filename)[0]}_at_{int(timestamp_seconds)}s.jpg"
+
+    try:
+        extract_frame_at_timestamp(video_path, timestamp_seconds, snapshot_path)
+        return {
+            "message": "Snapshot extracted successfully!",
+            "snapshot_path": snapshot_path
+        }
+    except Exception as e:
+        return {"error": f"Failed to extract snapshot: {str(e)}"}
