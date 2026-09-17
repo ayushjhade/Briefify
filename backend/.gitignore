@@ -3,3 +3,4 @@ __pycache__/
 uploaded_videos/
 extracted_audio/
 extracted_snapshots/
+.env
