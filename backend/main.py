@@ -1,5 +1,6 @@
-from fastapi import FastAPI, UploadFile, File, Form
+from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 import os
 import subprocess
 import json
@@ -7,7 +8,6 @@ from dotenv import load_dotenv
 from google import genai
 from google.genai import types
 
-# Load .env file
 env_path = os.path.join(os.path.dirname(__file__), ".env")
 load_dotenv(dotenv_path=env_path, override=True)
 
@@ -21,9 +21,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Directories for media storage
 os.makedirs("uploaded_videos", exist_ok=True)
 os.makedirs("extracted_audio", exist_ok=True)
 os.makedirs("extracted_snapshots", exist_ok=True)
+
+# Mount static file routes so the frontend can directly load videos and snapshots
+app.mount("/videos", StaticFiles(directory="uploaded_videos"), name="videos")
+app.mount("/snapshots", StaticFiles(directory="extracted_snapshots"), name="snapshots")
 
 
 def get_gemini_client():
@@ -42,6 +47,14 @@ def extract_audio_from_video(video_path: str, audio_path: str):
     subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
 
 
+def extract_frame_at_timestamp(video_path: str, timestamp_seconds: float, output_image_path: str):
+    command = [
+        "ffmpeg", "-ss", str(timestamp_seconds), "-i", video_path,
+        "-vframes", "1", "-q:v", "2", output_image_path, "-y"
+    ]
+    subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+
+
 @app.get("/")
 def read_root():
     return {"message": "Hello World! The AI Video Assistant Backend is running!"}
@@ -54,14 +67,18 @@ async def analyze_video(file: UploadFile = File(...)):
     except ValueError as e:
         return {"error": str(e)}
 
+    # 1. Save uploaded video
     video_path = f"uploaded_videos/{file.filename}"
     with open(video_path, "wb") as buffer:
         buffer.write(await file.read())
 
     base_filename = os.path.splitext(file.filename)[0]
+
+    # 2. Extract audio track
     audio_path = f"extracted_audio/{base_filename}.wav"
     extract_audio_from_video(video_path, audio_path)
 
+    # 3. AI Analysis with Gemini
     prompt = """
     You are an expert note-taker for video meetings, lectures, and podcasts.
     Analyze this audio track in detail. Generate comprehensive notes covering EVERYTHING discussed.
@@ -95,8 +112,23 @@ async def analyze_video(file: UploadFile = File(...)):
         except Exception:
             notes_data = response.text
 
+        # 4. Automatically extract a visual snapshot frame for every topic timestamp!
+        if isinstance(notes_data, list):
+            for note in notes_data:
+                seconds = note.get("start_seconds", 0)
+                snapshot_filename = f"{base_filename}_at_{int(seconds)}s.jpg"
+                snapshot_file_path = f"extracted_snapshots/{snapshot_filename}"
+                
+                try:
+                    extract_frame_at_timestamp(video_path, seconds, snapshot_file_path)
+                    note["snapshot_url"] = f"http://127.0.0.1:8000/snapshots/{snapshot_filename}"
+                except Exception as err:
+                    print(f"Snapshot extraction failed for timestamp {seconds}: {err}")
+                    note["snapshot_url"] = None
+
         return {
             "message": "Analysis complete!",
+            "video_url": f"http://127.0.0.1:8000/videos/{file.filename}",
             "video_filename": file.filename,
             "notes": notes_data
         }
