@@ -10,6 +10,9 @@ interface NoteTopic {
   snapshot_url?: string;
 }
 
+// Uses environment variable for deployed live backend, or defaults to local backend
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "http://127.0.0.1:8000";
+
 export default function Home() {
   const [file, setFile] = useState<File | null>(null);
   const [loading, setLoading] = useState(false);
@@ -40,7 +43,7 @@ export default function Home() {
 
       setStatusText("Gemini AI is analyzing video & generating notes with snapshots... 🧠");
 
-      const response = await fetch("http://127.0.0.1:8000/analyze-video/", {
+      const response = await fetch(`${API_BASE_URL}/analyze-video/`, {
         method: "POST",
         body: formData,
       });
@@ -57,7 +60,7 @@ export default function Home() {
         setStatusText(`Error: ${data.error || "Failed to analyze video."}`);
       }
     } catch (error) {
-      setStatusText("Error connecting to backend server.");
+      setStatusText("Error connecting to backend server. Make sure your Python backend is running!");
     } finally {
       setLoading(false);
     }
